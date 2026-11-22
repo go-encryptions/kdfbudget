@@ -1,0 +1,71 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Pure Go and every branch reachable with a test.
+  COVER_MIN: "100.0"
+
+jobs:
+  native:
+    name: native ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.2'
+          check-latest: true
+          cache: true
+      - name: vet
+        run: go vet ./...
+      - name: build
+        run: go build ./...
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+      - name: test (race + coverage gate)
+        run: |
+          set -euo pipefail
+          go test -race -coverprofile=cover.out ./... | tee cover.txt
+          go tool cover -func=cover.out | tail -1
+          pct=$(grep -oE 'coverage: [0-9.]+%' cover.txt | grep -oE '[0-9.]+' | head -1)
+          echo "coverage on ${{ matrix.arch }}: ${pct}% (floor ${COVER_MIN}%)"
+          awk -v p="$pct" -v m="$COVER_MIN" 'BEGIN { exit !(p+0 >= m+0) }' \
+            || { echo "coverage ${pct}% < ${COVER_MIN}%"; exit 1; }
+      - name: fuzz FuzzCharge
+        run: go test -fuzz '^FuzzCharge$' -fuzztime 30s .
+
+  # 32-bit: the charge arithmetic is uint64 throughout; a parameter above
+  # 2^32 must not wrap there.
+  i386:
+    name: 32-bit (386)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.2'
+          check-latest: true
+          cache: true
+      - name: test
+        env:
+          GOARCH: "386"
+        run: go test ./...
