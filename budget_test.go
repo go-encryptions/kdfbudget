@@ -296,3 +296,38 @@ func FuzzCharge(f *testing.F) {
 		}
 	})
 }
+
+// A nil Budget refuses with ErrLimit on every entry point: it must not panic,
+// and must not be a free pass.
+func TestNilBudgetRefusesWithoutPanic(t *testing.T) {
+	var n *Budget
+	calls := map[string]func() error{
+		"pbkdf2":      func() error { return n.ChargePBKDF2(1, 1) },
+		"argon2":      func() error { return n.ChargeArgon2(8, 1, 1) },
+		"compression": func() error { return n.ChargeCompressions(1, 1) },
+	}
+	for name, call := range calls {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("%s on a nil Budget panicked: %v", name, r)
+				}
+			}()
+			if err := call(); !errors.Is(err, ErrLimit) {
+				t.Errorf("%s on a nil Budget returned %v, want ErrLimit", name, err)
+			}
+		}()
+	}
+}
+
+// Against an unlimited budget only the overflow guards stand between a huge
+// cost and a wrapped, small one.
+func TestPBKDF2OverflowIsNotWrapped(t *testing.T) {
+	u := Unlimited()
+	mustRefuse(t, u.ChargePBKDF2(math.MaxUint64, 1)) // 2*cost wraps to MaxUint64-1
+	mustRefuse(t, u.ChargePBKDF2(1<<63, 1))          // 2*cost wraps to 0
+	mustRefuse(t, u.ChargePBKDF2(1<<32, 1<<32))      // cost*iters wraps
+	if u.Spent() != 0 {
+		t.Fatalf("an overflowing charge spent %d", u.Spent())
+	}
+}
