@@ -2,6 +2,7 @@ package kdfbudget
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -112,7 +113,9 @@ func TestPBKDF2Arithmetic(t *testing.T) {
 	mustRefuse(t, b.ChargePBKDF2(1, 0))
 	mustRefuse(t, b.ChargePBKDF2(math.MaxUint64, 1))   // 2*cost overflows
 	mustRefuse(t, b.ChargePBKDF2(2, math.MaxUint64/2)) // product overflows
-	mustRefuse(t, (*Budget)(nil).ChargePBKDF2(1, 1))
+	// The nil-receiver guards are held by TestNilBudgetRefusesWithoutPanic,
+	// which turns a panic into an assertion failure; calling them bare here
+	// would end the test binary instead.
 	mustRefuse(t, new(Budget).ChargePBKDF2(1, 1)) // zero Budget refuses
 	if b.Spent() != 4000 {
 		t.Fatal("a refusal spent work")
@@ -139,7 +142,6 @@ func TestArgon2Refusals(t *testing.T) {
 	mustRefuse(t, b.ChargeArgon2(15, 1, 2))      // under 8 KiB per thread
 	mustRefuse(t, b.ChargeArgon2(4<<20+1, 1, 1)) // above 4 GiB
 	mustRefuse(t, b.ChargeArgon2(1<<62, 1, 1))   // 2^62 KiB: zfs-style absurd
-	mustRefuse(t, (*Budget)(nil).ChargeArgon2(8, 1, 1))
 	if b.Spent() != 0 {
 		t.Fatal("a refusal spent work")
 	}
@@ -184,10 +186,6 @@ func TestUnlimitedAndNil(t *testing.T) {
 	u := Unlimited()
 	mustAccept(t, u.ChargePBKDF2(CostSHA512, 1<<40))
 	mustAccept(t, u.ChargeArgon2(1<<30, 1000, 255))
-	var n *Budget
-	if n.Spent() != 0 {
-		t.Fatal("nil Spent")
-	}
 }
 
 func TestExactBoundary(t *testing.T) {
@@ -306,6 +304,14 @@ func TestNilBudgetRefusesWithoutPanic(t *testing.T) {
 		"argon2":      func() error { return n.ChargeArgon2(8, 1, 1) },
 		"compression": func() error { return n.ChargeCompressions(1, 1) },
 	}
+	spent := func() error {
+		if got := n.Spent(); got != 0 {
+			return fmt.Errorf("Spent = %d, want 0", got)
+		}
+		return ErrLimit
+	}
+	calls["spent"] = spent
+	calls["charge"] = func() error { return n.charge(1, "x") }
 	for name, call := range calls {
 		func() {
 			defer func() {
